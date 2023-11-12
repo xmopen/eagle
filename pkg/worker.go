@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/xmopen/golib/pkg/xlogging"
@@ -8,6 +9,7 @@ import (
 
 // Worker pool worker
 type Worker struct {
+	id           int64
 	pool         *Pool
 	taskChannel  chan func()
 	xlog         *xlogging.Entry
@@ -15,8 +17,9 @@ type Worker struct {
 	lastUsedTime time.Time
 }
 
-func (w Worker) new(pool *Pool) IWorker {
+func newWorker(pool *Pool) IWorker {
 	return &Worker{
+		id:           atomic.AddInt64(&pool.workID, 1),
 		pool:         pool,
 		taskChannel:  make(chan func(), workerChannelSize()), // 这里是阻塞还是非阻塞呢？
 		close:        make(chan struct{}),
@@ -25,7 +28,6 @@ func (w Worker) new(pool *Pool) IWorker {
 }
 
 func (w Worker) run() {
-	w.pool.atomicAddRunningSize(1)
 	go func() {
 		// release resource
 		defer w.pool.cond.Signal()
@@ -44,8 +46,9 @@ func (w Worker) workerLoop() {
 		case <-w.close:
 			return
 		case task := <-w.taskChannel:
-			// TODO: 执行完之后还需要将当前Worker放回到idleContainer中
 			task()
+			// 将Worker回访到container中,重复利用
+			w.pool.recycleWorker(w)
 		}
 	}
 }
@@ -62,4 +65,12 @@ func (w Worker) laseUsedTime() time.Time {
 
 func (w Worker) addTaskFunc(task func()) {
 	w.taskChannel <- task
+}
+
+func (w Worker) updateLastUsedTime(lastTime time.Time) {
+	w.lastUsedTime = lastTime
+}
+
+func (w Worker) workerID() int64 {
+	return w.id
 }
